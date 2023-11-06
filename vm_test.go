@@ -1,10 +1,11 @@
 package goja
 
 import (
+	"testing"
+
 	"github.com/dop251/goja/file"
 	"github.com/dop251/goja/parser"
 	"github.com/dop251/goja/unistring"
-	"testing"
 )
 
 func TestTaggedTemplateArgExport(t *testing.T) {
@@ -188,7 +189,7 @@ fib(35);
 		b.Fatal(err)
 	}
 
-	c := newCompiler()
+	c := newCompiler(false)
 	c.compile(prg, false, true, nil)
 	c.p.dumpCode(b.Logf)
 

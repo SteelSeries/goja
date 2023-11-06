@@ -3,6 +3,7 @@ package goja
 import (
 	"fmt"
 	"math"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -333,6 +334,8 @@ type vm struct {
 	curAsyncRunner *asyncRunner
 
 	profTracker *profTracker
+
+	debugger *Debugger
 }
 
 type instruction interface {
@@ -629,6 +632,64 @@ func (vm *vm) runWithProfiler() bool {
 	return false
 }
 
+func (vm *vm) debug() {
+	// vm.halt = false
+	interrupted := false
+	ticks := 0
+	// vm.debugger.activate(ProgramStartActivation)
+
+	for !vm.halted() {
+		if interrupted = atomic.LoadUint32(&vm.interrupted) != 0; interrupted {
+			break
+		}
+
+		if vm.debugger != nil {
+			if !vm.debugger.active && vm.debugger.breakpoint() {
+				if vm.debugger.lastBreakpoint.filename == vm.debugger.Filename() &&
+					vm.debugger.lastBreakpoint.line == vm.debugger.Line() &&
+					vm.debugger.callStackDepth() <= vm.debugger.lastBreakpoint.stackDepth {
+					// Staying on same breakpoint, do nothing.
+				} else {
+					prevStackDepth := vm.debugger.lastBreakpoint.stackDepth
+					vm.debugger.lastBreakpoint.filename = vm.debugger.Filename()
+					vm.debugger.lastBreakpoint.line = vm.debugger.Line()
+					vm.debugger.lastBreakpoint.stackDepth = vm.debugger.callStackDepth()
+					if vm.debugger.lastBreakpoint.stackDepth >= prevStackDepth {
+						vm.debugger.updateCurrentLine()
+						vm.debugger.activate(BreakpointActivation)
+					}
+
+				}
+			} else {
+				vm.debugger.lastBreakpoint.filename = ""
+				vm.debugger.lastBreakpoint.line = -1
+			}
+			if vm.debugger != nil {
+				vm.debugger.lastBreakpoint.stackDepth = vm.debugger.callStackDepth()
+			}
+		}
+
+		vm.prg.code[vm.pc].exec(vm)
+
+		ticks++
+		if ticks > 10000 {
+			runtime.Gosched()
+			ticks = 0
+		}
+	}
+
+	if interrupted {
+		vm.interruptLock.Lock()
+		v := &InterruptedError{
+			iface: vm.interruptVal,
+		}
+		atomic.StoreUint32(&vm.interrupted, 0)
+		vm.interruptVal = nil
+		vm.interruptLock.Unlock()
+		panic(v)
+	}
+}
+
 func (vm *vm) Interrupt(v interface{}) {
 	vm.interruptLock.Lock()
 	vm.interruptVal = v
@@ -831,7 +892,11 @@ func (vm *vm) runTryInner() (ex *Exception) {
 		}
 	}()
 
-	vm.run()
+	if vm.debugger != nil {
+		vm.debug()
+	} else {
+		vm.run()
+	}
 	return
 }
 
@@ -1547,6 +1612,17 @@ func (_shr) exec(vm *vm) {
 	vm.stack[vm.sp-2] = intToValue(int64(left >> (right & 0x1F)))
 	vm.sp--
 	vm.pc++
+}
+
+type _debugger struct{}
+
+var debugger _debugger
+
+func (_debugger) exec(vm *vm) {
+	vm.pc++
+	if vm.debugger != nil && !vm.debugger.active { // this jumps over debugger statements
+		vm.debugger.activate(DebuggerStatementActivation)
+	}
 }
 
 type jump int32
