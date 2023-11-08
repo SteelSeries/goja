@@ -1625,6 +1625,14 @@ func (_debugger) exec(vm *vm) {
 	}
 }
 
+type _nop struct{}
+
+var nop _nop
+
+func (_nop) exec(vm *vm) {
+	vm.pc++
+}
+
 type jump int32
 
 func (j jump) exec(vm *vm) {

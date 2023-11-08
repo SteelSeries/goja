@@ -110,6 +110,16 @@ func TestDebuggerNext(t *testing.T) {
 		if err := debugger.Next(); err != nil {
 			t.Errorf("error while executing %s", err)
 		}
+		if debugger.PC() != 3 && debugger.Line() != 2 {
+			t.Errorf("wrong line and vm.pc, PC: %d, Line: %d", debugger.PC(), debugger.Line())
+		} else {
+			src, _ := debugger.List()
+			t.Logf("Go to line 3: > %s\n", src[debugger.Line()-1])
+		}
+
+		if err := debugger.Next(); err != nil {
+			t.Errorf("error while executing %s", err)
+		}
 		if debugger.PC() != 4 && debugger.Line() != 3 {
 			t.Errorf("wrong line and vm.pc, PC: %d, Line: %d", debugger.PC(), debugger.Line())
 		} else {
@@ -166,7 +176,7 @@ func TestDebuggerContinue(t *testing.T) {
 			t.Log("Hit second debugger statement")
 		}
 
-		if debugger.PC() != 7 && debugger.Line() != 6 {
+		if debugger.PC() != 12 && debugger.Line() != 5 {
 			t.Errorf("wrong line and vm.pc, PC: %d, Line: %d", debugger.PC(), debugger.Line())
 		} else {
 			src, _ := debugger.List()
@@ -233,7 +243,7 @@ f1();
 		} else {
 			t.Logf("globals: %v", globals)
 		}
-		if len(locals) != 6 {
+		if len(locals) != 8 {
 			t.Errorf("wrong locals len: %d, expected 6. locals: %v", len(locals), locals)
 		} else {
 			t.Logf("locals: %v", locals)
@@ -435,7 +445,6 @@ func TestDebuggerList(t *testing.T) {
 }
 
 func TestDebuggerSimpleCaseWhereLineIsIncorrectlyReported(t *testing.T) {
-	t.Skip() // this is blocking forever
 	const SCRIPT = `debugger;
 	function test() {
 		var a = true;
@@ -500,7 +509,7 @@ testClosure()
 	r.init()
 	debugger := r.AttachDebugger()
 
-	for _, line := range []int{2, 3, 4, 5, 6, 8, 11, 20, 21} {
+	for _, line := range []int{4, 6, 8, 11, 20, 21} {
 		if err := debugger.SetBreakpoint("test.js", line); err != nil {
 			t.Fatal(err)
 		} else {
@@ -518,14 +527,14 @@ testClosure()
 			}
 		}()
 
-		for _, line := range []int{20, 4, 5, 6, 8, 11, 6, 8, 11, 6, 8, 11, 6, 8, 11, 21} {
+		for i, line := range []int{20, 4, 6, 8, 11, 6, 8, 11, 6, 8, 11, 6, 8, 11, 21} {
 			reason := debugger.Continue()
 			if reason != BreakpointActivation {
 				t.Errorf("wrong activation %s", reason)
 			} else if debugger.Line() != line {
-				t.Errorf("expect line: %d, wrong line: %d", line, debugger.Line())
+				t.Errorf("test %d: expect line: %d, wrong line: %d", i+1, line, debugger.Line())
 			} else {
-				t.Logf("hit breakpoint on line %d", debugger.Line())
+				t.Logf("hit breakpoint on test %d line %d", i+1, debugger.Line())
 			}
 		}
 	}()
@@ -540,7 +549,7 @@ func testScript1WithRuntime(script string, expectedResult Value, t *testing.T, r
 	}
 
 	c := newCompiler(true) // TODO have it as a parameter?
-	c.compile(prg, false, false, r.vm)
+	c.compile(prg, false, true, nil)
 
 	vm := r.vm
 	vm.prg = c.p

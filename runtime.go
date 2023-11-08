@@ -1382,7 +1382,7 @@ func (r *Runtime) RunString(str string) (Value, error) {
 
 // RunScript executes the given string in the global context.
 func (r *Runtime) RunScript(name, src string) (Value, error) {
-	p, err := r.compile(name, src, false, true, false, nil)
+	p, err := r.compile(name, src, false, true, r.vm.debugger != nil, nil)
 
 	if err != nil {
 		return nil, err

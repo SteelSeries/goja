@@ -46,7 +46,61 @@ const (
 	BreakpointActivation        ActivationReason = "breakpoint"
 )
 
-var globalBuiltinKeys = map[string]bool{"Object": true, "Function": true, "Array": true, "String": true, "globalThis": true, "NaN": true, "undefined": true, "Infinity": true, "isNaN": true, "parseInt": true, "parseFloat": true, "isFinite": true, "decodeURI": true, "decodeURIComponent": true, "encodeURI": true, "encodeURIComponent": true, "escape": true, "unescape": true, "Number": true, "RegExp": true, "Date": true, "Boolean": true, "Proxy": true, "Reflect": true, "Error": true, "AggregateError": true, "TypeError": true, "ReferenceError": true, "SyntaxError": true, "RangeError": true, "EvalError": true, "URIError": true, "GoError": true, "eval": true, "Math": true, "JSON": true, "ArrayBuffer": true, "DataView": true, "Uint8Array": true, "Uint8ClampedArray": true, "Int8Array": true, "Uint16Array": true, "Int16Array": true, "Uint32Array": true, "Int32Array": true, "Float32Array": true, "Float64Array": true, "Symbol": true, "WeakSet": true, "WeakMap": true, "Map": true, "Set": true, "Promise": true}
+var globalBuiltinKeys = map[string]struct{}{
+	"Object":             {},
+	"Function":           {},
+	"Array":              {},
+	"String":             {},
+	"globalThis":         {},
+	"NaN":                {},
+	"undefined":          {},
+	"Infinity":           {},
+	"isNaN":              {},
+	"parseInt":           {},
+	"parseFloat":         {},
+	"isFinite":           {},
+	"decodeURI":          {},
+	"decodeURIComponent": {},
+	"encodeURI":          {},
+	"encodeURIComponent": {},
+	"escape":             {},
+	"unescape":           {},
+	"Number":             {},
+	"RegExp":             {},
+	"Date":               {},
+	"Boolean":            {},
+	"Proxy":              {},
+	"Reflect":            {},
+	"Error":              {},
+	"AggregateError":     {},
+	"TypeError":          {},
+	"ReferenceError":     {},
+	"SyntaxError":        {},
+	"RangeError":         {},
+	"EvalError":          {},
+	"URIError":           {},
+	"GoError":            {},
+	"eval":               {},
+	"Math":               {},
+	"JSON":               {},
+	"ArrayBuffer":        {},
+	"DataView":           {},
+	"Uint8Array":         {},
+	"Uint8ClampedArray":  {},
+	"Int8Array":          {},
+	"Uint16Array":        {},
+	"Int16Array":         {},
+	"Uint32Array":        {},
+	"Int32Array":         {},
+	"Float32Array":       {},
+	"Float64Array":       {},
+	"Symbol":             {},
+	"WeakSet":            {},
+	"WeakMap":            {},
+	"Map":                {},
+	"Set":                {},
+	"Promise":            {},
+}
 
 func (dbg *Debugger) activate(reason ActivationReason) {
 	dbg.active = true
@@ -125,6 +179,28 @@ func (dbg *Debugger) StepIn() error {
 	// TODO: implement proper error propagation
 	lastLine := dbg.Line()
 	dbg.updateCurrentLine()
+	if dbg.getLastLine() != dbg.Line() {
+		currLine := dbg.Line()
+		currFile := dbg.Filename()
+		for dbg.safeToRun() && dbg.Line() == currLine && dbg.Filename() == currFile {
+			dbg.updateCurrentLine()
+			dbg.vm.prg.code[dbg.vm.pc].exec(dbg.vm)
+		}
+		dbg.updateLastLine(lastLine)
+	} else if dbg.getNextLine() == 0 {
+		// Step out of functions
+		return errors.New("exhausted")
+	} else if dbg.vm.halted() {
+		// Step out of program
+		return errors.New("halted")
+	}
+	return nil
+}
+
+func (dbg *Debugger) StepPC() error {
+	// TODO: implement proper error propagation
+	lastLine := dbg.Line()
+	dbg.updateCurrentLine()
 	if dbg.safeToRun() {
 		dbg.updateCurrentLine()
 		dbg.vm.prg.code[dbg.vm.pc].exec(dbg.vm)
@@ -184,7 +260,7 @@ func (dbg *Debugger) Print(varName string) (string, error) {
 	if val == Undefined() {
 		return fmt.Sprint(dbg.vm.prg.values), err
 	} else if val == nil {
-		return fmt.Sprintf("error accessing variable '%s'", varName), err
+		return fmt.Sprintf("error resolving variable '%s'", varName), err
 	} else {
 		return fmt.Sprint(val), err
 	}
@@ -355,7 +431,7 @@ func (dbg *Debugger) GetGlobalVariables() (map[string]Value, error) {
 	globals := make(map[string]Value)
 	for _, name := range dbg.vm.r.globalObject.self.stringKeys(true, nil) {
 		nameStr := name.String()
-		if globalBuiltinKeys[nameStr] {
+		if _, ok := globalBuiltinKeys[nameStr]; ok {
 			continue
 		}
 		val := dbg.vm.r.globalObject.self.getStr(unistring.String(nameStr), nil)
