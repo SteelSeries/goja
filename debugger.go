@@ -20,6 +20,7 @@ type Debugger struct {
 	activationCh   chan chan ActivationReason
 	currentCh      chan ActivationReason
 	active         bool
+	breakNext      bool
 	lastBreakpoint struct {
 		filename   string
 		line       int
@@ -103,6 +104,7 @@ var globalBuiltinKeys = map[string]struct{}{
 }
 
 func (dbg *Debugger) activate(reason ActivationReason) {
+	dbg.breakNext = false
 	dbg.active = true
 	ch := <-dbg.activationCh // get channel from waiter
 	ch <- reason             // send what activated it
@@ -175,6 +177,18 @@ func (dbg *Debugger) Breakpoints() (map[string][]int, error) {
 	return dbg.breakpoints, nil
 }
 
+func (dbg *Debugger) runOneStepAsync() error {
+	dbg.breakNext = true
+	dbg.lastBreakpoint.filename = ""
+	dbg.lastBreakpoint.line = -1
+	dbg.lastBreakpoint.stackDepth = -1
+	reason := dbg.Continue()
+	if reason != BreakpointActivation {
+		return fmt.Errorf("unexpected breakpoint reason stepping into builtin function (%v)", reason)
+	}
+	return nil
+}
+
 func (dbg *Debugger) StepIn() error {
 	// TODO: implement proper error propagation
 	lastLine := dbg.Line()
@@ -184,12 +198,27 @@ func (dbg *Debugger) StepIn() error {
 		currFile := dbg.Filename()
 		for dbg.safeToRun() && dbg.Line() == currLine && dbg.Filename() == currFile {
 			dbg.updateCurrentLine()
-			dbg.vm.prg.code[dbg.vm.pc].exec(dbg.vm)
+			inst := dbg.vm.prg.code[dbg.vm.pc]
+			// call functions cannot simply be executed because they can invoke vm calls themselves
+			// (like for built-in functions). Set up a breakpoint on the next vm line and return
+			// then instead.
+			// Also does this if we're on the last code of the VM.
+			if _, ok := inst.(call); ok || dbg.vm.pc >= len(dbg.vm.prg.code)-1 {
+				err := dbg.runOneStepAsync()
+				if err != nil {
+					return err
+				}
+			} else {
+				inst.exec(dbg.vm)
+			}
 		}
 		dbg.updateLastLine(lastLine)
 	} else if dbg.getNextLine() == 0 {
 		// Step out of functions
-		return errors.New("exhausted")
+		for dbg.safeToRun() && dbg.vm.pc < len(dbg.vm.prg.code)-1 {
+			dbg.vm.prg.code[dbg.vm.pc].exec(dbg.vm)
+		}
+		return dbg.runOneStepAsync()
 	} else if dbg.vm.halted() {
 		// Step out of program
 		return errors.New("halted")
@@ -203,7 +232,15 @@ func (dbg *Debugger) StepPC() error {
 	dbg.updateCurrentLine()
 	if dbg.safeToRun() {
 		dbg.updateCurrentLine()
-		dbg.vm.prg.code[dbg.vm.pc].exec(dbg.vm)
+		inst := dbg.vm.prg.code[dbg.vm.pc]
+		if _, ok := inst.(call); ok || dbg.vm.pc >= len(dbg.vm.prg.code)-1 {
+			err := dbg.runOneStepAsync()
+			if err != nil {
+				return err
+			}
+		} else {
+			inst.exec(dbg.vm)
+		}
 		dbg.updateLastLine(lastLine)
 	} else if dbg.vm.halted() {
 		return errors.New("halted")
@@ -214,17 +251,29 @@ func (dbg *Debugger) StepPC() error {
 func (dbg *Debugger) Next() error {
 	// TODO: implement proper error propagation
 	lastLine := dbg.Line()
+	nextLine := dbg.getNextLine()
 	dbg.updateCurrentLine()
-	if dbg.getLastLine() != dbg.Line() {
-		nextLine := dbg.getNextLine()
-		for dbg.safeToRun() && nextLine > 0 && dbg.Line() != nextLine {
+	if dbg.getLastLine() != dbg.Line() && nextLine != 0 {
+		currFile := dbg.Filename()
+		for dbg.safeToRun() && (dbg.Line() != nextLine || dbg.Filename() != currFile) {
 			dbg.updateCurrentLine()
-			dbg.vm.prg.code[dbg.vm.pc].exec(dbg.vm)
+			inst := dbg.vm.prg.code[dbg.vm.pc]
+			if _, ok := inst.(call); ok || dbg.vm.pc >= len(dbg.vm.prg.code)-1 {
+				err := dbg.runOneStepAsync()
+				if err != nil {
+					return err
+				}
+			} else {
+				inst.exec(dbg.vm)
+			}
 		}
 		dbg.updateLastLine(lastLine)
-	} else if dbg.getNextLine() == 0 {
+	} else if nextLine == 0 {
 		// Step out of functions
-		return errors.New("exhausted")
+		for dbg.safeToRun() && dbg.vm.pc < len(dbg.vm.prg.code)-1 {
+			dbg.vm.prg.code[dbg.vm.pc].exec(dbg.vm)
+		}
+		return dbg.runOneStepAsync()
 	} else if dbg.vm.halted() {
 		// Step out of program
 		return errors.New("halted")
@@ -281,6 +330,11 @@ func stringToLines(s string) (lines []string, err error) {
 }
 
 func (dbg *Debugger) breakpoint() bool {
+	if dbg.breakNext {
+		// breakNext will be cleared in activate()
+		return true
+	}
+
 	filename := dbg.Filename()
 	line := dbg.Line()
 

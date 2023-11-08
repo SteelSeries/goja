@@ -542,6 +542,168 @@ testClosure()
 	<-ch // wait for the debugger
 }
 
+func TestDebuggerStepIntoBuiltinFunc(t *testing.T) {
+	const SCRIPT = `
+function testClosure() {
+  return (() => {
+    const base = 10;
+    return [ 1, 2, 3, 4, 5 ].reduce((s, v) => {
+      s += v + base;
+      {
+        let x = 123;
+        s += x;
+        {
+          let x = -123;
+          s += x;
+        }
+      }
+      return s;
+    })
+  })()
+}
+
+testClosure()
+testClosure()
+`
+	r := &Runtime{}
+	r.init()
+	debugger := r.AttachDebugger()
+
+	bk := 5
+	if err := debugger.SetBreakpoint("test.js", bk); err != nil {
+		t.Fatal(err)
+	} else {
+		t.Logf("Set breakpoint on line %d", bk)
+	}
+
+	ch := make(chan struct{})
+	go func() {
+		defer close(ch)
+		defer debugger.Detach()
+		defer func() {
+			if t.Failed() {
+				r.Interrupt("failed test")
+			}
+		}()
+
+		reason := debugger.Continue()
+		if reason != BreakpointActivation {
+			t.Errorf("wrong activation %s", reason)
+		}
+
+		line := 6
+		if err := debugger.StepIn(); err != nil {
+			t.Errorf("error while executing %s", err)
+		} else if debugger.Line() != line {
+			t.Errorf("expect line: %d, wrong line: %d", line, debugger.Line())
+		} else {
+			t.Logf("hit breakpoint on line %d", debugger.Line())
+		}
+	}()
+	testScript1WithRuntime(SCRIPT, intToValue(55), t, r)
+	<-ch // wait for the debugger
+}
+
+func TestDebuggerStepInEndBuiltinFunc(t *testing.T) {
+	const SCRIPT = `
+function testBuiltin() {
+    let a = [1, 2].reduce((s, v) => {
+      return s + v;
+    })
+	return a
+}
+
+testBuiltin()
+`
+	r := &Runtime{}
+	r.init()
+	debugger := r.AttachDebugger()
+
+	bk := 4
+	if err := debugger.SetBreakpoint("test.js", bk); err != nil {
+		t.Fatal(err)
+	} else {
+		t.Logf("Set breakpoint on line %d", bk)
+	}
+
+	ch := make(chan struct{})
+	go func() {
+		defer close(ch)
+		defer debugger.Detach()
+		defer func() {
+			if t.Failed() {
+				r.Interrupt("failed test")
+			}
+		}()
+
+		reason := debugger.Continue()
+		if reason != BreakpointActivation {
+			t.Errorf("wrong activation %s", reason)
+		}
+
+		line := 6
+		if err := debugger.StepIn(); err != nil {
+			t.Errorf("error while executing %s", err)
+		} else if debugger.Line() != line {
+			t.Errorf("expect line: %d, wrong line: %d", line, debugger.Line())
+		} else {
+			t.Logf("hit breakpoint on line %d", debugger.Line())
+		}
+	}()
+	testScript1WithRuntime(SCRIPT, intToValue(3), t, r)
+	<-ch // wait for the debugger
+}
+
+func TestDebuggerNextEndBuiltinFunc(t *testing.T) {
+	const SCRIPT = `
+function testBuiltin() {
+    let a = [1, 2].reduce((s, v) => {
+      return s + v;
+    })
+	return a
+}
+
+testBuiltin()
+`
+	r := &Runtime{}
+	r.init()
+	debugger := r.AttachDebugger()
+
+	bk := 4
+	if err := debugger.SetBreakpoint("test.js", bk); err != nil {
+		t.Fatal(err)
+	} else {
+		t.Logf("Set breakpoint on line %d", bk)
+	}
+
+	ch := make(chan struct{})
+	go func() {
+		defer close(ch)
+		defer debugger.Detach()
+		defer func() {
+			if t.Failed() {
+				r.Interrupt("failed test")
+			}
+		}()
+
+		reason := debugger.Continue()
+		if reason != BreakpointActivation {
+			t.Errorf("wrong activation %s", reason)
+		}
+
+		line := 6
+		if err := debugger.Next(); err != nil {
+			t.Errorf("error while executing %s", err)
+		} else if debugger.Line() != line {
+			t.Errorf("expect line: %d, wrong line: %d", line, debugger.Line())
+		} else {
+			t.Logf("hit breakpoint on line %d", debugger.Line())
+		}
+	}()
+	testScript1WithRuntime(SCRIPT, intToValue(3), t, r)
+	<-ch // wait for the debugger
+}
+
 func testScript1WithRuntime(script string, expectedResult Value, t *testing.T, r *Runtime) {
 	prg, err := parser.ParseFile(nil, "test.js", script, 0)
 	if err != nil {
