@@ -1621,7 +1621,8 @@ var debugger _debugger
 func (_debugger) exec(vm *vm) {
 	vm.pc++
 	if vm.debugger != nil && !vm.debugger.active { // this jumps over debugger statements
-		vm.debugger.activate(DebuggerStatementActivation)
+		vm.debugger.breakNext = true
+		vm.debugger.breakNextReason = DebuggerStatementActivation
 	}
 }
 

@@ -14,14 +14,15 @@ import (
 type Debugger struct {
 	vm *vm
 
-	currentLine    int
-	lastLine       int
-	breakpoints    map[string][]int
-	activationCh   chan chan ActivationReason
-	currentCh      chan ActivationReason
-	active         bool
-	breakNext      bool
-	lastBreakpoint struct {
+	currentLine     int
+	lastLine        int
+	breakpoints     map[string][]int
+	activationCh    chan chan ActivationReason
+	currentCh       chan ActivationReason
+	active          bool
+	breakNext       bool
+	breakNextReason ActivationReason
+	lastBreakpoint  struct {
 		filename   string
 		line       int
 		stackDepth int
@@ -105,6 +106,10 @@ var globalBuiltinKeys = map[string]struct{}{
 
 func (dbg *Debugger) activate(reason ActivationReason) {
 	dbg.breakNext = false
+	if dbg.breakNextReason != "" {
+		reason = dbg.breakNextReason
+		dbg.breakNextReason = ""
+	}
 	dbg.active = true
 	ch := <-dbg.activationCh // get channel from waiter
 	ch <- reason             // send what activated it
@@ -177,6 +182,23 @@ func (dbg *Debugger) Breakpoints() (map[string][]int, error) {
 	return dbg.breakpoints, nil
 }
 
+// returns true on instructions that can call vm.run() or vm.debug() themselves, or if we're at the
+// end of the current code stack
+func (dbg *Debugger) shouldRunAsync() bool {
+	if dbg.vm.pc >= len(dbg.vm.prg.code)-1 {
+		return true
+	}
+	switch dbg.vm.prg.code[dbg.vm.pc].(type) {
+	case
+		call, _callVariadic,
+		callEval, _callEvalVariadic,
+		callEvalStrict, _callEvalVariadicStrict,
+		superCall, _superCallVariadic:
+		return true
+	}
+	return false
+}
+
 func (dbg *Debugger) runOneStepAsync() error {
 	dbg.breakNext = true
 	dbg.lastBreakpoint.filename = ""
@@ -198,18 +220,13 @@ func (dbg *Debugger) StepIn() error {
 		currFile := dbg.Filename()
 		for dbg.safeToRun() && dbg.Line() == currLine && dbg.Filename() == currFile {
 			dbg.updateCurrentLine()
-			inst := dbg.vm.prg.code[dbg.vm.pc]
-			// call functions cannot simply be executed because they can invoke vm calls themselves
-			// (like for built-in functions). Set up a breakpoint on the next vm line and return
-			// then instead.
-			// Also does this if we're on the last code of the VM.
-			if _, ok := inst.(call); ok || dbg.vm.pc >= len(dbg.vm.prg.code)-1 {
+			if dbg.shouldRunAsync() {
 				err := dbg.runOneStepAsync()
 				if err != nil {
 					return err
 				}
 			} else {
-				inst.exec(dbg.vm)
+				dbg.vm.prg.code[dbg.vm.pc].exec(dbg.vm)
 			}
 		}
 		dbg.updateLastLine(lastLine)
@@ -226,20 +243,42 @@ func (dbg *Debugger) StepIn() error {
 	return nil
 }
 
+func (dbg *Debugger) StepOut() error {
+	// TODO: implement proper error propagation
+	lastLine := dbg.Line()
+	dbg.updateCurrentLine()
+	for dbg.safeToRun() {
+		if dbg.vm.pc >= len(dbg.vm.prg.code)-1 {
+			err := dbg.runOneStepAsync()
+			if err != nil {
+				return err
+			}
+			dbg.updateLastLine(lastLine)
+			break
+		} else {
+			dbg.vm.prg.code[dbg.vm.pc].exec(dbg.vm)
+		}
+		dbg.updateLastLine(lastLine)
+	}
+	if dbg.vm.halted() {
+		return errors.New("halted")
+	}
+	return nil
+}
+
 func (dbg *Debugger) StepPC() error {
 	// TODO: implement proper error propagation
 	lastLine := dbg.Line()
 	dbg.updateCurrentLine()
 	if dbg.safeToRun() {
 		dbg.updateCurrentLine()
-		inst := dbg.vm.prg.code[dbg.vm.pc]
-		if _, ok := inst.(call); ok || dbg.vm.pc >= len(dbg.vm.prg.code)-1 {
+		if dbg.shouldRunAsync() {
 			err := dbg.runOneStepAsync()
 			if err != nil {
 				return err
 			}
 		} else {
-			inst.exec(dbg.vm)
+			dbg.vm.prg.code[dbg.vm.pc].exec(dbg.vm)
 		}
 		dbg.updateLastLine(lastLine)
 	} else if dbg.vm.halted() {
@@ -257,14 +296,13 @@ func (dbg *Debugger) Next() error {
 		currFile := dbg.Filename()
 		for dbg.safeToRun() && (dbg.Line() != nextLine || dbg.Filename() != currFile) {
 			dbg.updateCurrentLine()
-			inst := dbg.vm.prg.code[dbg.vm.pc]
-			if _, ok := inst.(call); ok || dbg.vm.pc >= len(dbg.vm.prg.code)-1 {
+			if dbg.shouldRunAsync() {
 				err := dbg.runOneStepAsync()
 				if err != nil {
 					return err
 				}
 			} else {
-				inst.exec(dbg.vm)
+				dbg.vm.prg.code[dbg.vm.pc].exec(dbg.vm)
 			}
 		}
 		dbg.updateLastLine(lastLine)
@@ -295,6 +333,9 @@ func (dbg *Debugger) Exec(expr string) (Value, error) {
 func (dbg *Debugger) Print(varName string) (string, error) {
 	if varName == "" {
 		return "", errors.New("please specify variable name")
+	}
+	if varName == "this" {
+		varName = thisBindingName
 	}
 	val, err := dbg.getValue(varName)
 
@@ -418,13 +459,16 @@ func (dbg *Debugger) eval(expr string) (v Value, err error) {
 	}()
 
 	var this Value
+	var inGlobal bool
 	if dbg.vm.sb >= 0 {
 		this = dbg.vm.stack[dbg.vm.sb]
+		inGlobal = false
 	} else {
 		this = dbg.vm.r.globalObject
+		inGlobal = true
 	}
 
-	c.compile(prg, false, true, nil)
+	c.compile(prg, false, inGlobal, dbg.vm)
 
 	defer func() {
 		if x := recover(); x != nil {
