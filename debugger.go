@@ -193,7 +193,8 @@ func (dbg *Debugger) shouldRunAsync() bool {
 		call, _callVariadic,
 		callEval, _callEvalVariadic,
 		callEvalStrict, _callEvalVariadicStrict,
-		superCall, _superCallVariadic:
+		superCall, _superCallVariadic,
+		*yieldMarker:
 		return true
 	}
 	return false
